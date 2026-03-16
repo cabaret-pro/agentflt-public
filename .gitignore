@@ -1,0 +1,33 @@
+# Build output
+/agentflt
+/agentctl
+*.exe
+
+# Go
+*.test
+coverage.out
+
+# IDE / OS
+.DS_Store
+.idea/
+*.swp
+*.swo
+
+# Runtime data
+/tmp/
+*.png
+*.jpg
+
+# Python (test scripts, development)
+*.py
+venv/
+__pycache__/
+*.pyc
+.ruff_cache/
+
+# Development artifacts
+.grok/
+
+# Misc test directories
+use/
+you/
