@@ -209,3 +209,17 @@ go test ./...
 ## License
 
 [MIT](LICENSE)
+
+---
+
+## Disclaimer
+
+**agentflt is beta software. Use at your own risk.**
+
+- **Token usage** — agentflt spawns and monitors AI agent processes but does not control or limit their API usage. You are solely responsible for monitoring and capping token consumption. Runaway agents can incur significant API costs. Always set spending limits in your AI provider's dashboard before running agents.
+
+- **Security** — agentflt runs agents in local tmux sessions on your machine. Follow standard security practices: do not run agents with elevated privileges, be cautious about the commands and repos you expose to agents, and review agent output before applying changes to production systems.
+
+- **Privacy** — agentflt operates entirely locally. It does not collect, transmit, intercept, or share any data — including API keys, source code, agent output, or usage metrics. All session data is stored only in a local SQLite database (`~/.agentflt/sessions.db`) on your machine.
+
+- **No warranty** — This software is provided "as is" without warranty of any kind. The authors are not liable for any damages, data loss, or costs arising from its use.
