@@ -2,7 +2,9 @@ package supervisor
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -228,7 +230,7 @@ func (s *Supervisor) emitFileChangeEvents(sessionID, repoPath, cwd string, now i
 	if root == "" {
 		return
 	}
-	files, err := git.ModifiedFiles(root)
+	files, err := git.ModifiedFiles(root, time.Time{})
 	if err != nil {
 		return
 	}
@@ -302,15 +304,29 @@ func (s *Supervisor) GetModifiedFiles(sessionID string) ([]git.ModifiedFile, err
 	if err != nil || !ok {
 		return nil, err
 	}
-	// Use the current working directory (updated dynamically from tmux pane)
-	path := sess.Cwd
-	if path == "" {
+	// Resolve the best path to inspect for modified files.
+	// Priority:
+	//   1. repo_path if it's absolute AND the directory actually exists on disk
+	//   2. cwd (updated dynamically every tick from the tmux pane)
+	//   3. repo_path as a fallback (relative or unverified)
+	path := ""
+	if filepath.IsAbs(sess.RepoPath) {
+		if info, serr := os.Stat(sess.RepoPath); serr == nil && info.IsDir() {
+			path = sess.RepoPath
+		}
+	}
+	if path == "" && sess.Cwd != "" {
+		path = sess.Cwd
+	}
+	if path == "" && sess.RepoPath != "" && sess.RepoPath != "." {
 		path = sess.RepoPath
 	}
 	if path == "" {
 		return nil, nil
 	}
-	return git.ModifiedFiles(path)
+	// Use session start time as the cutoff so we only show files the agent itself touched.
+	startedAt := time.Unix(sess.StartedAt, 0)
+	return git.ModifiedFiles(path, startedAt)
 }
 
 // checkProcessState returns the state of a process: "running", "stopped", "zombie", "dead", or empty string if unknown.

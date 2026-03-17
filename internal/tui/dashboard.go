@@ -57,6 +57,33 @@ func logDebug(format string, args ...interface{}) {
 }
 
 // tmuxErrForUser converts a tmux error into a short, actionable message for the UI.
+// parseNewFlags extracts --repo and --cwd flag values from a raw command string,
+// returning the cleaned command (with flags removed) and the flag values.
+// Example: "opencode --repo /my/project" → cmd="opencode", repo="/my/project", cwd=""
+func parseNewFlags(raw string) (cmd, repo, cwd string) {
+	tokens := strings.Fields(raw)
+	var cmdParts []string
+	for i := 0; i < len(tokens); i++ {
+		t := tokens[i]
+		switch {
+		case t == "--repo" && i+1 < len(tokens):
+			i++
+			repo = tokens[i]
+		case strings.HasPrefix(t, "--repo="):
+			repo = t[len("--repo="):]
+		case t == "--cwd" && i+1 < len(tokens):
+			i++
+			cwd = tokens[i]
+		case strings.HasPrefix(t, "--cwd="):
+			cwd = t[len("--cwd="):]
+		default:
+			cmdParts = append(cmdParts, t)
+		}
+	}
+	cmd = strings.Join(cmdParts, " ")
+	return
+}
+
 func tmuxErrForUser(prefix string, err error) string {
 	if err == nil {
 		return ""
@@ -168,11 +195,12 @@ type Model struct {
 	Sessions       []store.Session
 	AlertSessions  []store.Session
 	Selected       int
-	FocusSession   store.Session
-	OutputLines    []string
-	ModifiedFiles  []git.ModifiedFile
-	OutputViewport viewport.Model
-	FileSelected   int
+	FocusSession        store.Session
+	OutputLines         []string
+	ModifiedFiles       []git.ModifiedFile
+	OutputViewport      viewport.Model
+	FileSelected        int
+	FileSelectedPath    string // tracks selection by path so refreshes don't reset the cursor
 	Width          int
 	Height         int
 	// ExitAttach: when set, main should run tmux attach to this session after quit
@@ -297,7 +325,7 @@ func RunWithModel(db *store.DB, sup *supervisor.Supervisor) (*Model, error) {
 
 func (m *Model) Init() tea.Cmd {
 	ti := textinput.New()
-	ti.Placeholder = "new \"Claude\" claude | attach | stop | 1-9"
+	ti.Placeholder = "new \"Title\" cmd [--repo PATH] | attach | stop"
 	ti.Width = 50
 	ti.Prompt = cmdBarPrompt
 	m.CmdInput = ti
@@ -471,6 +499,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.FileSelected = len(m.ModifiedFiles) - 1
 						}
 					}
+					m.FileSelectedPath = m.ModifiedFiles[m.FileSelected].Abs
 				}
 				return m, refreshCmd()
 			}
@@ -589,6 +618,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.PaneInputMode = false
 				m.ComposeFocused = false
 				m.FocusShowFiles = true
+				m.FileSelectedPath = ""
+				m.FileSelected = 0
 				m.FocusRightPanel = "modified"
 				m.FocusAutoFollow = true
 				m.FocusLiveBuffer = ""
@@ -675,6 +706,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.FileSelected >= len(m.ModifiedFiles) {
 					m.FileSelected = len(m.ModifiedFiles) - 1
 				}
+				m.FileSelectedPath = m.ModifiedFiles[m.FileSelected].Abs
 			}
 		}
 		return m, nil
@@ -723,6 +755,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.FileSelected < 0 {
 					m.FileSelected = 0
 				}
+				m.FileSelectedPath = m.ModifiedFiles[m.FileSelected].Abs
 			}
 		}
 		return m, nil
@@ -1141,9 +1174,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Even when skipping output update, always refresh modified files list
 			files, _ := m.Sup.GetModifiedFiles(m.FocusSession.ID)
 			m.ModifiedFiles = files
-			if m.FileSelected >= len(m.ModifiedFiles) {
-				m.FileSelected = 0
-			}
+			m.syncFileSelected()
 		}
 	}
 		if m.Screen == screenTimeline && m.TimelineSession.ID != "" {
@@ -1247,6 +1278,7 @@ func (m *Model) handleArrowUpLeft() {
 		if m.FileSelected < 0 {
 			m.FileSelected = 0
 		}
+		m.FileSelectedPath = m.ModifiedFiles[m.FileSelected].Abs
 	}
 }
 
@@ -1289,6 +1321,7 @@ func (m *Model) handleArrowDownRight() {
 		if m.FileSelected >= len(m.ModifiedFiles) {
 			m.FileSelected = len(m.ModifiedFiles) - 1
 		}
+		m.FileSelectedPath = m.ModifiedFiles[m.FileSelected].Abs
 	}
 }
 
@@ -1406,10 +1439,32 @@ func (m *Model) loadFocus(sessionID string) {
 	m.OutputLines = lines
 	files, _ := m.Sup.GetModifiedFiles(sessionID)
 	m.ModifiedFiles = files
-	m.FileSelected = 0
+	m.syncFileSelected()
 	content := strings.Join(m.OutputLines, "\n")
 	m.OutputViewport.SetContent(content)
 	m.OutputViewport.GotoBottom()
+}
+
+// syncFileSelected restores FileSelected to the index of FileSelectedPath in ModifiedFiles.
+// If the previously selected path is no longer in the list, it clamps to a valid index.
+func (m *Model) syncFileSelected() {
+	if m.FileSelectedPath != "" {
+		for i, f := range m.ModifiedFiles {
+			if f.Abs == m.FileSelectedPath {
+				m.FileSelected = i
+				return
+			}
+		}
+	}
+	// Path not found (new session or file removed): keep current index if valid, else reset.
+	if m.FileSelected >= len(m.ModifiedFiles) {
+		m.FileSelected = 0
+		if len(m.ModifiedFiles) > 0 {
+			m.FileSelectedPath = m.ModifiedFiles[0].Abs
+		} else {
+			m.FileSelectedPath = ""
+		}
+	}
 }
 
 // reloadSessionsAndPanes reloads sessions from DB and rebuilds panes; clamps focus/selection indices.
@@ -1532,42 +1587,43 @@ func (m *Model) runCommandBar(line string) {
 		}
 	}
 
-	// new "Title" cmd  or  new Title cmd  — add another window/agent
+	// new "Title" cmd [--repo PATH] [--cwd PATH]  or  new Title cmd [--repo PATH] [--cwd PATH]
+	// --repo and --cwd may appear anywhere after the title.
 	if strings.HasPrefix(lower, "new ") {
 		rest := strings.TrimSpace(line[4:])
-		var title, cmd string
+		var title, cmdRaw string
 		if len(rest) >= 2 && (rest[0] == '"' || rest[0] == '\'') {
 			quote := rest[0]
 			end := strings.IndexRune(rest[1:], rune(quote))
 			if end >= 0 {
 				title = rest[1 : end+1]
-				cmd = strings.TrimSpace(rest[end+2:])
+				cmdRaw = strings.TrimSpace(rest[end+2:])
 			}
 		}
 		if title == "" {
 			parts := strings.SplitN(rest, " ", 2)
 			title = strings.TrimSpace(parts[0])
 			if len(parts) > 1 {
-				cmd = strings.TrimSpace(parts[1])
+				cmdRaw = strings.TrimSpace(parts[1])
 			}
 		}
-		if title != "" && cmd != "" {
-			repo, cwd := ".", "."
-			if m.Screen == screenFleet && len(m.Sessions) > 0 && m.Selected < len(m.Sessions) {
-				s := m.Sessions[m.Selected]
-				repo, cwd = s.RepoPath, s.Cwd
-			} else if len(m.TerminalPanes) > 0 && m.FocusedPaneIndex < len(m.TerminalPanes) {
-				s := m.TerminalPanes[m.FocusedPaneIndex].Session
-				repo, cwd = s.RepoPath, s.Cwd
-			}
+		if title != "" && cmdRaw != "" {
+			// Parse --repo and --cwd flags out of cmdRaw, leaving the bare command.
+			cmd, flagRepo, flagCwd := parseNewFlags(cmdRaw)
+
+			// Determine repo/cwd. If the user provided explicit flags, use them.
+			// Otherwise, default to "." (current directory where agentflt was launched)
+			// to avoid incorrectly inheriting a different session's paths.
+			repo := flagRepo
+			cwd := flagCwd
 			if repo == "" {
-				repo = cwd
+				repo = "."
 			}
 			if cwd == "" {
-				cwd = repo
+				cwd = "."
 			}
-		logDebug("CreateSession title=%q repo=%q cwd=%q cmd=%q", title, repo, cwd, cmd)
-		_, err := m.Sup.CreateSession(title, "", repo, cwd, cmd)
+			logDebug("CreateSession title=%q repo=%q cwd=%q cmd=%q", title, repo, cwd, cmd)
+			_, err := m.Sup.CreateSession(title, "", repo, cwd, cmd)
 			if err != nil {
 				logDebug("CreateSession failed: %v", err)
 				m.LastError = tmuxErrForUser("create: ", err)
@@ -2191,7 +2247,9 @@ func (m *Model) viewFocus() string {
 		if len(m.ModifiedFiles) == 0 {
 			right.WriteString(styleDim.Render("  (no changes)") + "\n")
 		} else {
-			for i := 0; i < min(listHeight, len(m.ModifiedFiles)); i++ {
+			start := max(0, min(m.FileSelected, len(m.ModifiedFiles)-listHeight))
+			end := min(len(m.ModifiedFiles), start+listHeight)
+			for i := start; i < end; i++ {
 				f := m.ModifiedFiles[i]
 				row := fmt.Sprintf("  %s  %s", f.Status, truncate(f.Path, max(10, rightW-10)))
 				if i == m.FileSelected {

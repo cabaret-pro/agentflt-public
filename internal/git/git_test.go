@@ -5,16 +5,28 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestModifiedFiles_NotARepo(t *testing.T) {
 	dir := t.TempDir()
-	files, err := ModifiedFiles(dir)
-	if err == nil {
-		t.Log("ModifiedFiles in non-repo: expected error, got nil (git may init automatically in some envs)")
+	// Write a file so the fallback directory listing has something to return.
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hi"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
 	}
-	if len(files) > 0 {
-		t.Errorf("expected no files in non-repo, got %d", len(files))
+	files, err := ModifiedFiles(dir, time.Time{})
+	if err != nil {
+		t.Fatalf("ModifiedFiles in non-repo returned error: %v", err)
+	}
+	// The fallback listing should return the file we created.
+	var found bool
+	for _, f := range files {
+		if filepath.Base(f.Path) == "hello.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected hello.txt in non-repo listing, got %+v", files)
 	}
 }
 
@@ -24,7 +36,7 @@ func TestModifiedFiles_EmptyRepo(t *testing.T) {
 		t.Skip("git not available or init failed:", err)
 	}
 
-	files, err := ModifiedFiles(dir)
+	files, err := ModifiedFiles(dir, time.Time{})
 	if err != nil {
 		t.Fatalf("ModifiedFiles: %v", err)
 	}
@@ -48,19 +60,24 @@ func TestModifiedFiles_WithChanges(t *testing.T) {
 		t.Skip("git add failed:", err)
 	}
 
-	files, err := ModifiedFiles(dir)
+	files, err := ModifiedFiles(dir, time.Time{})
 	if err != nil {
 		t.Fatalf("ModifiedFiles: %v", err)
 	}
 	if len(files) < 1 {
 		t.Fatalf("expected at least one file, got %d", len(files))
 	}
+	// Resolve symlinks on the expected path (macOS /tmp -> /private/tmp)
+	fWant := f
+	if resolved, err := filepath.EvalSymlinks(f); err == nil {
+		fWant = resolved
+	}
 	var found bool
 	for _, file := range files {
 		if filepath.Base(file.Path) == "foo.txt" {
 			found = true
-			if file.Abs != f {
-				t.Errorf("Abs = %q want %q", file.Abs, f)
+			if file.Abs != fWant {
+				t.Errorf("Abs = %q want %q", file.Abs, fWant)
 			}
 			break
 		}
