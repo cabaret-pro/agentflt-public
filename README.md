@@ -14,6 +14,10 @@ Run multiple coding agents in parallel. See what each is doing. Jump into any se
                                              agentflt · agent fleet
 ```
 
+
+https://github.com/user-attachments/assets/6d483750-906e-4dbf-8962-2cbd6c631b8d
+
+
 ---
 
 ## Why
